@@ -98,8 +98,8 @@ async def receive_receipt(message: types.Message, state: FSMContext):
     )
 
     admin_kb = InlineKeyboardBuilder()
-    admin_kb.button(text="✅ Підтвердити", callback_data=f"appr_pay_{tg_id}")
-    admin_kb.button(text="❌ Відхилити", callback_data=f"rej_pay_{tg_id}")
+    admin_kb.button(text="Підтвердити", callback_data=f"appr_pay_{tg_id}", style="success")
+    admin_kb.button(text="Відхилити", callback_data=f"rej_pay_{tg_id}", style="danger")
 
     try:
         if message.photo:

@@ -13,10 +13,10 @@ router = Router()
 
 class ProfileForm(StatesGroup):
     waiting_for_new_name = State()
-    waiting_for_new_phone = State()
     waiting_for_new_mail = State()
     waiting_for_new_education = State()
     waiting_for_new_faculty = State()
+    waiting_for_new_group = State()
 
 
 @router.callback_query(F.data == "profile")
@@ -30,19 +30,40 @@ async def show_profile(callback: types.CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
+    status_map = {
+        "pending": "Очікує оплати ⏳",
+        "processing": "На перевірці адміністратором ⏳",
+        "success": "Оплачено ✅"
+    }
+    payment_status = status_map.get(user.status, "Невідомо")
+    quest_text = "Так 🗺" if user.quest_participation else "Ні ❌"
+
     text = (
         f"👤 <b>ТВІЙ ПРОФІЛЬ</b>\n"
         f"───────────────\n"
         f"<b>ПІБ:</b> {user.name}\n"
-        f"<b>Телефон:</b> {user.phone}\n"
         f"<b>Пошта:</b> {user.mail}\n"
         f"<b>Навчання:</b> {user.education}\n"
     )
 
-    if user.faculty != "не навчаюсь":
-        text += f"<b>Факультет:</b> {user.faculty}\n"
+    # Динамічне відображення залежно від університету
+    if user.education == "KSE":
+        if user.faculty: text += f"<b>Програма:</b> {user.faculty}\n"
+        if user.group: text += f"<b>Рік випуску:</b> {user.group}\n"
+    elif user.education == "КПІ ім. Ігоря Сікорського":
+        if user.faculty and user.faculty != "не навчаюсь":
+            text += f"<b>Факультет:</b> {user.faculty}\n"
+        if user.group:
+            text += f"<b>Група:</b> {user.group}\n"
+    else:
+        if user.faculty and user.faculty != "не навчаюсь":
+            text += f"<b>Факультет/Напрям:</b> {user.faculty}\n"
 
-    text += f"───────────────\n"
+    text += (
+        f"<b>Участь у квесті:</b> {quest_text}\n"
+        f"───────────────\n"
+        f"🎟 <b>Статус квитка:</b> {payment_status}"
+    )
 
     builder = InlineKeyboardBuilder()
     builder.button(text="⚙️ Змінити дані", callback_data="prof_edit_menu")
@@ -64,20 +85,44 @@ async def edit_profile_menu(callback: types.CallbackQuery):
 
     builder = InlineKeyboardBuilder()
     builder.button(text="✏️ ПІБ", callback_data="edit_prof_name")
-    builder.button(text="✏️ Телефон", callback_data="edit_prof_phone")
     builder.button(text="✏️ Пошта", callback_data="edit_prof_mail")
     builder.button(text="✏️ Навчальний заклад", callback_data="edit_prof_education")
 
-    if user and user.faculty != "не навчаюсь":
-        builder.button(text="✏️ Факультет", callback_data="edit_prof_faculty")
-        builder.adjust(2, 2, 1, 1)
+    if user.education == "KSE":
+        builder.button(text="✏️ Програма", callback_data="edit_prof_faculty")
+        builder.button(text="✏️ Рік випуску", callback_data="edit_prof_group")
     else:
-        builder.adjust(2, 2, 1)
+        builder.button(text="✏️ Факультет", callback_data="edit_prof_faculty")
+        builder.button(text="✏️ Група", callback_data="edit_prof_group")
+
+    quest_btn_text = "❌ Скасувати участь у квесті" if user.quest_participation else "🗺 Додати участь у квесті"
+    builder.button(text=quest_btn_text, callback_data="toggle_quest_prof")
 
     builder.button(text="Назад до профілю", callback_data="profile")
 
-    await callback.message.edit_text("⚙️ <b>Що саме ти хочеш змінити?</b>", reply_markup=builder.as_markup())
+    builder.adjust(2, 1, 2, 1, 1)
+
+    await callback.message.edit_text(
+        "⚙️ <b>Що саме ти хочеш змінити?</b>\n\n"
+        "<i>*Якщо ти змінюєш університет, не забудь також змінити факультет/програму та групу/рік!</i>",
+        reply_markup=builder.as_markup()
+    )
     await callback.answer()
+
+
+@router.callback_query(F.data == "toggle_quest_prof")
+async def toggle_quest_in_profile(callback: types.CallbackQuery, state: FSMContext):
+    """Миттєво змінює статус участі у квесті на протилежний"""
+    tg_id = callback.from_user.id
+    user = await get_user(tg_id)
+
+    new_val = not user.quest_participation
+
+    await update_user_field(tg_id, "quest_participation", new_val)
+    asyncio.create_task(update_user_in_sheet(tg_id, "quest_participation", new_val))
+
+    await callback.answer("✅ Статус квесту оновлено!")
+    await show_profile(callback, state)
 
 
 @router.callback_query(F.data.startswith("edit_prof_"))
@@ -85,19 +130,19 @@ async def start_edit_text_field(callback: types.CallbackQuery, state: FSMContext
     field = callback.data.replace("edit_prof_", "")
 
     prompts = {
-        "name": "Введіть нове ПІБ:",
-        "phone": "Введи новий номер телефону (наприклад, 095027...):",
+        "name": "Введи нове ПІБ:",
         "mail": "Введи нову електронну пошту:",
-        "education": "Введи назву твого нового навчального закладу (або 'не навчаюсь'):",
-        "faculty": "Введи назву твого нового факультету:"
+        "education": "Введи назву твого нового навчального закладу (наприклад: KSE, КПІ ім. Ігоря Сікорського):",
+        "faculty": "Введи нову програму або факультет:",
+        "group": "Введи нову групу або рік випуску:"
     }
 
     states = {
         "name": ProfileForm.waiting_for_new_name,
-        "phone": ProfileForm.waiting_for_new_phone,
         "mail": ProfileForm.waiting_for_new_mail,
         "education": ProfileForm.waiting_for_new_education,
-        "faculty": ProfileForm.waiting_for_new_faculty
+        "faculty": ProfileForm.waiting_for_new_faculty,
+        "group": ProfileForm.waiting_for_new_group
     }
 
     prompt = prompts.get(field)
@@ -114,44 +159,30 @@ async def start_edit_text_field(callback: types.CallbackQuery, state: FSMContext
 
 
 @router.message(ProfileForm.waiting_for_new_name, F.text)
-@router.message(ProfileForm.waiting_for_new_phone, F.text)
 @router.message(ProfileForm.waiting_for_new_mail, F.text)
 @router.message(ProfileForm.waiting_for_new_education, F.text)
 @router.message(ProfileForm.waiting_for_new_faculty, F.text)
+@router.message(ProfileForm.waiting_for_new_group, F.text)
 async def save_text_field(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
 
     state_to_field = {
         ProfileForm.waiting_for_new_name.state: "name",
-        ProfileForm.waiting_for_new_phone.state: "phone",
         ProfileForm.waiting_for_new_mail.state: "mail",
         ProfileForm.waiting_for_new_education.state: "education",
-        ProfileForm.waiting_for_new_faculty.state: "faculty"
+        ProfileForm.waiting_for_new_faculty.state: "faculty",
+        ProfileForm.waiting_for_new_group.state: "group"
     }
     field_to_update = state_to_field.get(current_state)
     input_text = message.text.strip()
 
-    if field_to_update == "phone":
-        input_text = input_text.replace(" ", "").replace("-", "").replace("(", "").replace(")", "").replace("+", "")
-        if input_text.startswith("380"):
-            input_text = input_text[2:]
-
-        if not input_text.isdigit() or len(input_text) != 10:
-            await message.answer(
-                "❌ Некоректний номер телефону. Він має містити лише 10 цифр (наприклад, 0123456789). Спробуй ще раз:")
-            return
-
     if field_to_update == "mail":
-        if "@" not in input_text or input_text.lower() == "email@example.com":
+        if "@" not in input_text or len(input_text) < 5:
             await message.answer(
-                "❌ Некоректна пошта. Вона має містити символ @ і не бути email@example.com. Спробуй ще раз:")
+                "❌ Некоректна пошта. Вона має містити символ @. Спробуй ще раз:")
             return
 
-    if field_to_update == "education" and input_text.lower() == "не навчаюсь":
-        await update_user_field(message.from_user.id, "faculty", "не навчаюсь")
-        asyncio.create_task(update_user_in_sheet(tg_id=message.from_user.id, field="faculty", new_value="не навчаюсь"))
-
-    if field_to_update == "faculty":
+    if field_to_update in ["faculty", "group"]:
         input_text = input_text.upper()
 
     await update_user_field(message.from_user.id, field_to_update, input_text)
