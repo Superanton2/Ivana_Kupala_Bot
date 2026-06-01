@@ -13,6 +13,7 @@ from app.routers.admin_router import router as admin_router
 from app.routers.registration_router import router as registration_router
 from app.routers.profile_router import router as profile_router
 from app.routers.faq_router import router as faq_router
+from app.routers.payment_router import router as payment_router
 
 load_dotenv()
 router = Router()
@@ -21,6 +22,7 @@ router.include_routers(
     registration_router,
     profile_router,
     faq_router,
+    payment_router,
 )
 
 async def safe_reply(message: types.Message, text: str, reply_markup=None):
